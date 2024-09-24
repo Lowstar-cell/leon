@@ -9,12 +9,15 @@ import type {
   SkillConfigSchema,
   SkillBridgeSchema
 } from '@/schemas/skill-schemas'
+import { SKILLS_PATH } from '@/constants'
 
 interface SkillDomain {
+  domainId: string
   name: string
   path: string
   skills: {
     [key: string]: {
+      domainId: string
       name: string
       path: string
       bridge: SkillBridgeSchema
@@ -27,7 +30,11 @@ interface SkillConfigWithGlobalEntities
   entities: Record<string, GlobalEntitySchema>
 }
 
-const DOMAINS_DIR = path.join(process.cwd(), 'skills')
+interface SkillActionObject {
+  domain: string
+  skill: string
+  action: string
+}
 
 export class SkillDomainHelper {
   /**
@@ -37,10 +44,8 @@ export class SkillDomainHelper {
     const skillDomains = new Map<string, SkillDomain>()
 
     await Promise.all(
-      (
-        await fs.promises.readdir(DOMAINS_DIR)
-      ).map(async (entity) => {
-        const domainPath = path.join(DOMAINS_DIR, entity)
+      (await fs.promises.readdir(SKILLS_PATH)).map(async (entity) => {
+        const domainPath = path.join(SKILLS_PATH, entity)
 
         if ((await fs.promises.stat(domainPath)).isDirectory()) {
           const skills: SkillDomain['skills'] = {}
@@ -48,20 +53,26 @@ export class SkillDomainHelper {
             path.join(domainPath, 'domain.json')
           )) as DomainSchema
           const skillFolders = await fs.promises.readdir(domainPath)
+          const domainPathParts = domainPath.split('/')
+          const domainId = domainPathParts[domainPathParts.length - 1] as string
 
           for (let i = 0; i < skillFolders.length; i += 1) {
             const skillAliasName = skillFolders[i] as string
             const skillPath = path.join(domainPath, skillAliasName)
 
             if ((await fs.promises.stat(skillPath)).isDirectory()) {
+              const skillJSONPath = path.join(skillPath, 'skill.json')
+
+              if (!fs.existsSync(skillJSONPath)) {
+                continue
+              }
+
               const { name: skillName, bridge: skillBridge } = JSON.parse(
-                await fs.promises.readFile(
-                  path.join(skillPath, 'skill.json'),
-                  'utf8'
-                )
+                await fs.promises.readFile(skillJSONPath, 'utf8')
               ) as SkillSchema
 
               skills[skillName] = {
+                domainId,
                 name: skillAliasName,
                 path: skillPath,
                 bridge: skillBridge
@@ -69,6 +80,7 @@ export class SkillDomainHelper {
             }
 
             const skillDomain: SkillDomain = {
+              domainId,
               name: entity,
               path: domainPath,
               skills
@@ -93,7 +105,7 @@ export class SkillDomainHelper {
   ): Promise<DomainSchema> {
     return JSON.parse(
       await fs.promises.readFile(
-        path.join(DOMAINS_DIR, domain, 'domain.json'),
+        path.join(SKILLS_PATH, domain, 'domain.json'),
         'utf8'
       )
     )
@@ -110,10 +122,36 @@ export class SkillDomainHelper {
   ): Promise<SkillSchema> {
     return JSON.parse(
       await fs.promises.readFile(
-        path.join(DOMAINS_DIR, domain, skill, 'skill.json'),
+        path.join(SKILLS_PATH, domain, skill, 'skill.json'),
         'utf8'
       )
     )
+  }
+
+  /**
+   * Get skill path
+   * @param domain Domain where the skill belongs
+   * @param skill Skill to get path from
+   */
+  public static getSkillPath(
+    domain: SkillDomain['name'],
+    skill: SkillSchema['name']
+  ): string {
+    return path.join(SKILLS_PATH, domain, skill)
+  }
+
+  /**
+   * Get skill config path
+   * @param domain Domain where the skill belongs
+   * @param skill Skill to get config path from
+   * @param lang Language short code
+   */
+  public static getSkillConfigPath(
+    domain: SkillDomain['name'],
+    skill: SkillSchema['name'],
+    lang: ShortLanguageCode
+  ): string {
+    return path.join(SKILLS_PATH, domain, skill, 'config', `${lang}.json`)
   }
 
   /**
@@ -161,5 +199,72 @@ export class SkillDomainHelper {
     }
 
     return result
+  }
+
+  /**
+   * Get a memory from a skill
+   * @param domain Domain where the skill belongs
+   * @param skill Skill to get memory from
+   * @param memory Memory name
+   */
+  public static async getSkillMemory(
+    domain: SkillDomain['name'],
+    skill: SkillSchema['name'],
+    memory: string
+  ): Promise<Record<string, unknown> | null> {
+    const skillMemoryPath = path.join(
+      SKILLS_PATH,
+      domain,
+      skill,
+      'memory',
+      `${memory}.json`
+    )
+
+    if (!fs.existsSync(skillMemoryPath)) {
+      return null
+    }
+
+    return JSON.parse(await fs.promises.readFile(skillMemoryPath, 'utf-8'))
+  }
+
+  /**
+   * Verify if an action exists
+   * @param lang Language short code
+   * @param params Action to verify
+   * @example actionExists('food_drink.advisor.suggest') // true
+   * @example actionExists({ domain: 'food_drink', skill: 'advisor', action: 'suggest' }) // true
+   */
+  public static async actionExists(
+    lang: ShortLanguageCode,
+    params: string | SkillActionObject
+  ): Promise<boolean> {
+    const { domain, skill, action } =
+      typeof params === 'string'
+        ? {
+            domain: params.split('.')[0],
+            skill: params.split('.')[1],
+            action: params.split('.')[2]
+          }
+        : params
+
+    if (!domain || !skill || !action) {
+      return false
+    }
+
+    const skillPath = path.join(SKILLS_PATH, domain, skill)
+    if (!fs.existsSync(skillPath)) {
+      return false
+    }
+
+    const skillConfigPath = path.join(skillPath, 'config', `${lang}.json`)
+    if (!fs.existsSync(skillConfigPath)) {
+      return false
+    }
+
+    const { actions } = JSON.parse(
+      await fs.promises.readFile(skillConfigPath, 'utf8')
+    ) as SkillConfigSchema
+
+    return !!actions[action]
   }
 }

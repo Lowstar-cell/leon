@@ -1,7 +1,7 @@
 {
-  "verbose": false,
+  "verbose": true,
   "watch": ["server/src"],
   "ext": "ts,js,json",
   "ignore": [".git", "node_modules", "server/src/tmp", "server/dist"],
-  "exec": "ts-node server/src/index.ts"
+  "exec": "tsx server/src/index.ts"
 }

@@ -15,5 +15,11 @@
       ]
     }
   },
-  "answers": {}
+  "answers": {
+    "give_number": [
+      {
+        "speech": "%given_number%"
+      }
+    ]
+  }
 }

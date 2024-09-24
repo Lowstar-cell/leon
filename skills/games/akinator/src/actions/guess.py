@@ -1,71 +1,82 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
+from bridges.python.src.sdk.leon import leon
+from bridges.python.src.sdk.types import ActionParams
+from ..lib import Akinator, memory
 
-import utils
-from ..lib import akinator, db
+def run(params: ActionParams) -> None:
+    """Guess according to the given thematic"""
 
-def guess(params):
-	"""Guess according to the given thematic"""
+    resolvers = params['resolvers']
+    answer = None
 
-	resolvers = params['resolvers']
-	answer = None
+    for resolver in resolvers:
+        if resolver['name'] == 'answer':
+            answer = resolver['value']
 
-	for resolver in resolvers:
-		if resolver['name'] == 'answer':
-			answer = resolver['value']
+    # Return no speech if no value has been found
+    if answer is None:
+        return leon.answer({'core': {'isInActionLoop': False}})
 
-	# Return no speech if no value has been found
-	if answer == None:
-		return utils.output('end', None, { 'isInActionLoop': False })
+    session = memory.get_session()
 
-	aki = akinator.Akinator()
+    akinator = Akinator(
+        lang=session['lang'],
+        theme=session['theme']
+    )
 
-	session = db.get_session()
-	response = session['response']
-	formatted_response = aki._parse_response(response)
-	aki.session = session['session']
-	aki.signature = session['signature']
-	aki.progression = session['progression']
-	aki.uri = session['uri']
-	aki.timestamp = session['timestamp']
-	aki.server = session['server']
-	aki.child_mode = session['child_mode']
-	aki.frontaddr = session['frontaddr']
-	aki.question_filter = session['question_filter']
+    # Retrieve the current session progress
+    akinator.json = {
+        'step': session['step'],
+        'progression': session['progression'],
+        'sid': session['sid'],
+        'cm': session['cm'],
+        'session': session['session'],
+        'signature': session['signature']
+    }
 
-	resp = aki._parse_response(response)
-	aki._update(resp, '"step": "0"' in response)
+    new_progress_response = akinator.post_answer(answer)
 
-	if session['progression'] > 80:
-		aki.win()
+    if 'name_proposition' in new_progress_response:
+        leon.answer({
+            'key': 'guessed',
+            'data': {
+                'name': new_progress_response['name_proposition'],
+                'description': new_progress_response['description_proposition']
+            }
+        })
 
-		utils.output('inter', { 'key': 'guessed', 'data': {
-			'name': aki.first_guess['name'],
-			'description': aki.first_guess['description']
-		}})
+        leon.answer({
+            'key': 'guessed_img',
+            'data': {
+                'name': new_progress_response['name_proposition'],
+                'url': new_progress_response['photo']
+            }
+        })
 
-		utils.output('inter', { 'key': 'guessed_img', 'data': {
-			'name': aki.first_guess['name'],
-			'url': aki.first_guess['absolute_picture_path']
-		}})
+        return leon.answer({
+            'key': 'ask_for_retry',
+            'core': {
+                'isInActionLoop': False,
+                'showNextActionSuggestions': True
+            }
+        })
 
-		return utils.output('end', 'ask_for_retry', {
-			'isInActionLoop': False, 'showNextActionSuggestions': True
-		})
-
-	aki.answer(answer)
-
-	db.upsert_session({
-        'response': aki.response,
-		'session': aki.session,
-		'signature': aki.signature,
-		'progression': aki.progression,
-        'uri': aki.uri,
-        'timestamp': aki.timestamp,
-        'server': aki.server,
-        'child_mode': aki.child_mode,
-        'frontaddr': aki.frontaddr,
-        'question_filter': aki.question_filter
+    memory.upsert_session({
+        'lang': session['lang'],
+        'theme': session['theme'],
+        'sid': session['sid'],
+        'cm': session['cm'],
+        'signature': session['signature'],
+        'session': session['session'],
+        'question': new_progress_response['question'],
+        'step': int(new_progress_response['step']),
+        'progression': float(new_progress_response['progression'])
     })
 
-	return utils.output('end', aki.question, { 'showSuggestions': True })
+    # TODO: widget with image
+
+    leon.answer({
+        'key': akinator.question,
+        'core': {
+            'showSuggestions': True
+        }
+    })

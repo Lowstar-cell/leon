@@ -97,16 +97,22 @@ const GLOBAL_DATA_SCHEMAS = {
   LogHelper.info('Checking system requirements...')
 
   const totalRAMInGB = Math.round(SystemHelper.getTotalRAM())
+  const freeRAMInGB = Math.round(SystemHelper.getFreeRAM())
 
-  if (totalRAMInGB < MINIMUM_REQUIRED_RAM) {
+  if (freeRAMInGB < MINIMUM_REQUIRED_RAM) {
     LogHelper.warning(
-      `Total RAM: ${totalRAMInGB} GB. Leon needs at least ${MINIMUM_REQUIRED_RAM} GB of RAM. It may not work as expected.`
+      `Free RAM: ${freeRAMInGB} GB | Total RAM: ${totalRAMInGB} GB. Leon needs at least ${MINIMUM_REQUIRED_RAM} GB of RAM. It may not work as expected.`
     )
   } else {
     LogHelper.success(
-      `Minimum required RAM: ${MINIMUM_REQUIRED_RAM} GB | Total RAM: ${totalRAMInGB} GB`
+      `Minimum required RAM: ${MINIMUM_REQUIRED_RAM} GB | Free RAM: ${freeRAMInGB} GB | Total RAM: ${totalRAMInGB} GB`
     )
   }
+
+  /**
+   * New updates checking
+   */
+  LogHelper.info('Checking for new updates...')
 
   /**
    * Voice configuration checking

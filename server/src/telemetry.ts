@@ -22,7 +22,7 @@ import {
   NODEJS_BRIDGE_VERSION,
   PYTHON_BRIDGE_VERSION,
   STT_PROVIDER,
-  TCP_SERVER_VERSION,
+  PYTHON_TCP_SERVER_VERSION,
   TTS_PROVIDER
 } from '@/constants'
 import { SystemHelper } from '@/helpers/system-helper'
@@ -68,14 +68,13 @@ export class Telemetry {
         const data = {
           isProduction: IS_PRODUCTION_ENV,
           isGitpod: IS_GITPOD,
-          isOnline: true,
           language: LANG,
           sttProvider: STT_PROVIDER,
           ttsProvider: TTS_PROVIDER,
           coreVersion: LEON_VERSION,
           nodeJSBridgeVersion: NODEJS_BRIDGE_VERSION,
           pythonBridgeVersion: PYTHON_BRIDGE_VERSION,
-          tcpServerVersion: TCP_SERVER_VERSION,
+          tcpServerVersion: PYTHON_TCP_SERVER_VERSION,
           environment: {
             osDetails: {
               type: os.type(),
@@ -87,6 +86,7 @@ export class Telemetry {
               distro: null as Os | null
             },
             totalRAMInGB: SystemHelper.getTotalRAM(),
+            freeRAMInGB: SystemHelper.getFreeRAM(),
             nodeVersion: SystemHelper.getNodeJSVersion(),
             npmVersion: SystemHelper.getNPMVersion()
           }

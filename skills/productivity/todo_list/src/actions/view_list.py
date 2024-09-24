@@ -1,80 +1,69 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
+from bridges.python.src.sdk.leon import leon
+from bridges.python.src.sdk.toolbox import get_widget_id
+from bridges.python.src.sdk.types import ActionParams
+from bridges.python.src.sdk.widget import WidgetOptions
+from ..widgets.todos_list_widget import TodosListWidget
+from ..lib import memory
 
-from time import time
+from typing import Union
 
-import utils
-from ..lib import db
 
-def view_list(params):
-	"""View a to-do list"""
+def run(params: ActionParams) -> None:
+    """View a to-do list"""
 
-	# List name
-	list_name = ''
+    widget_id = get_widget_id()
+    list_name: Union[str, None] = None
 
-	# Find entities
-	for item in params['entities']:
-		if item['entity'] == 'list':
-			list_name = item['sourceText'].lower()
+    for item in params['entities']:
+        if item['entity'] == 'list':
+            list_name = item['sourceText'].lower()
 
-	# Verify if the list exists
-	if db.has_list(list_name) == False:
-		return utils.output('end', { 'key': 'list_does_not_exist',
-			'data': {
-				'list': list_name
-			}
-		})
+    # Do not check anything if a widget id is provided (fetch)
+    if widget_id is None:
+        if list_name is None:
+            return leon.answer({'key': 'list_not_provided'})
 
-	# Grab todos of the list
-	todos = db.get_todos(list_name)
+        if not memory.has_todo_list(list_name):
+            return leon.answer({
+                'key': 'list_does_not_exist',
+                'data': {
+                    'list': list_name
+                }
+            })
 
-	if len(todos) == 0:
-		return utils.output('end', { 'key': 'empty_list',
-			'data': {
-				'list': list_name
-			}
-		})
+        widget_id = memory.get_todo_list_by_name(list_name)['widget_id']
+    else:
+        todo_list = memory.get_todo_list_by_widget_id(widget_id)
 
-	unchecked_todos = db.get_uncomplete_todos(list_name)
-	completed_todos = db.get_done_todos(list_name)
+        if todo_list is None:
+            return leon.answer({
+                'key': 'list_does_not_exist',
+                'data': {
+                    'list': list_name
+                }
+            })
 
-	result_unchecked_todos = ''
-	result_completed_todos = ''
+        list_name = memory.get_todo_list_by_widget_id(widget_id)['name']
 
-	if len(unchecked_todos) == 0:
-		utils.output('inter', { 'key': 'no_unchecked_todo',
-			'data': {
-				'list': list_name
-			}
-		})
-	else:
-		for todo in unchecked_todos:
-			result_unchecked_todos += utils.translate('list_todo_element', {
-				'todo': todo['name']
-			})
+    todos = memory.get_todo_items(widget_id, list_name)
 
-		utils.output('inter', { 'key': 'unchecked_todos_listed',
-			'data': {
-				'list': list_name,
-				'result': result_unchecked_todos
-			}
-		})
+    if len(todos) == 0:
+        return leon.answer({
+            'key': 'empty_list',
+            'data': {
+                'list': list_name
+            }
+        })
 
-	if len(completed_todos) == 0:
-		return utils.output('end', { 'key': 'no_completed_todo',
-			'data': {
-				'list': list_name
-			}
-		})
+    todos_list_widget = TodosListWidget(
+        WidgetOptions(
+            wrapper_props={'noPadding': True},
+            params={'list_name': list_name, 'todos': todos},
+            on_fetch={
+                'widget_id': widget_id,
+                'action_name': 'view_list'
+            }
+        )
+    )
 
-	for todo in completed_todos:
-		result_completed_todos += utils.translate('list_completed_todo_element', {
-			'todo': todo['name']
-		})
-
-	return utils.output('end', { 'key': 'completed_todos_listed',
-		'data': {
-			'list': list_name,
-			'result': result_completed_todos
-		}
-	})
+    leon.answer({'widget': todos_list_widget})

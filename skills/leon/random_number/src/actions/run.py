@@ -1,10 +1,26 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
+from bridges.python.src.sdk.leon import leon
+from bridges.python.src.sdk.types import ActionParams
 
-import utils
 from random import randint
 
-def run(params):
-	"""Leon gives a random number"""
+from bridges.python.src.sdk.widget import WidgetOptions
+from ..widgets.number_widget import NumberWidget, NumberWidgetParams
 
-	return utils.output('end', randint(0, 100))
+
+def run(params: ActionParams) -> None:
+    """Leon gives a random number"""
+
+    random_number = randint(0, 100)
+
+    number_widget_options: WidgetOptions[NumberWidgetParams] = WidgetOptions(
+        params={'random_number': random_number}
+    )
+    number_widget = NumberWidget(number_widget_options)
+
+    leon.answer({
+        'widget': number_widget,
+        'key': 'give_number',
+        'data': {
+            'given_number': random_number
+        }
+    })

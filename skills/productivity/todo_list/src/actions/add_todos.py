@@ -1,50 +1,57 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
+from bridges.python.src.sdk.leon import leon
+from bridges.python.src.sdk.types import ActionParams
+from bridges.python.src.sdk.widget import WidgetOptions
+from ..widgets.todos_list_widget import TodosListWidget, TodosListWidgetParams
+from ..lib import memory
 
-from time import time
+from typing import Union
 
-import utils
-from ..lib import db
+def run(params: ActionParams) -> None:
+    """Add todos to a to-do list"""
 
-def add_todos(params):
-	"""Add todos to a to-do list"""
+    list_name: Union[str, None] = None
+    todos: list[str] = []
 
-	# List name
-	list_name = ''
+    for item in params['entities']:
+        if item['entity'] == 'list':
+            list_name = item['sourceText'].lower()
+        elif item['entity'] == 'todos':
+            todos = [chunk.strip() for chunk in item['sourceText'].lower().split(',')]
 
-	# Todos
-	todos = []
+    if list_name is None:
+        return leon.answer({'key': 'list_not_provided'})
 
-	# Find entities
-	for item in params['entities']:
-		if item['entity'] == 'list':
-			list_name = item['sourceText'].lower()
-		elif item['entity'] == 'todos':
-			# Split todos into array and trim start/end-whitespaces
-			todos = [chunk.strip() for chunk in item['sourceText'].lower().split(',')]
+    if len(todos) == 0:
+        return leon.answer({'key': 'todos_not_provided'})
 
-	# Verify if a list name has been provided
-	if not list_name:
-		return utils.output('end', 'list_not_provided')
+    widget_id = None
+    if not memory.has_todo_list(list_name):
+        todos_list_widget = TodosListWidget(WidgetOptions())
+        widget_id = todos_list_widget.id
+        memory.create_todo_list(
+            widget_id,
+            list_name
+        )
+        memory.create_todo_list(widget_id, list_name)
+    else:
+        widget_id = memory.get_todo_list_by_name(list_name)['widget_id']
 
-	# Verify todos have been provided
-	if len(todos) == 0:
-		return utils.output('end', 'todos_not_provided')
+    result: str = ''
+    for todo in todos:
+        memory.create_todo_item(widget_id, list_name, todo)
+        result += str(leon.set_answer_data('list_todo_element', {'todo': todo}))
 
-	# Verify the list exists
-	if db.has_list(list_name) == False:
-		# Create the new to-do list
-		db.create_list(list_name)
+    # Get the updated list of todos
+    list_todos = memory.get_todo_items(None, list_name)
 
-	result = ''
-	for todo in todos:
-		# Add to-do to DB
-		db.create_todo(list_name, todo)
-		result += utils.translate('list_todo_element', { 'todo': todo })
+    todos_list_options: WidgetOptions[TodosListWidgetParams] = WidgetOptions(
+        wrapper_props={'noPadding': True},
+        params={'list_name': list_name, 'todos': list_todos},
+        on_fetch={
+            'widget_id': list_todos[0]['widget_id'],
+            'action_name': 'view_list'
+        }
+    )
+    todos_list_widget = TodosListWidget(todos_list_options)
 
-	return utils.output('end', { 'key': 'todos_added',
-		'data': {
-			'list': list_name,
-		  	'result': result
-		}
-	})
+    leon.answer({'widget': todos_list_widget})

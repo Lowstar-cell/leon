@@ -1,38 +1,45 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
+from bridges.python.src.sdk.leon import leon
+from bridges.python.src.sdk.types import ActionParams
+from ..lib import Akinator, memory
 
-import utils
-from ..lib import akinator, db
+def run(params: ActionParams) -> None:
+    """Initialize new session"""
 
-def setup(params):
-	"""Initialize new session"""
+    leon.answer({'key': 'calling_akinator'})
 
-	utils.output('inter', 'calling_akinator')
+    slots, lang = params['slots'], params['lang']
+    thematic = slots['thematic']['resolution']['value']
 
-	slots, lang = params['slots'], params['lang']
-	thematic = slots['thematic']['resolution']['value']
-	theme_lang = lang
-	if thematic != 'characters':
-		theme_lang = lang + '_' + thematic
+    try:
+        akinator = Akinator(
+            lang=lang,
+            theme=thematic
+        )
 
-	try:
-		aki = akinator.Akinator()
+        question = akinator.start_game()
 
-		q = aki.start_game(theme_lang)
+        memory.upsert_session({
+            'lang': lang,
+            'theme': thematic,
+            'cm': False,
+            'sid': akinator.json['sid'],
+            'question': akinator.question,
+            'step': akinator.step,
+            'progression': akinator.progression,
+            'signature': akinator.json['signature'],
+            'session': akinator.json['session'],
+        })
 
-		db.upsert_session({
-			'response': aki.response,
-			'session': aki.session,
-			'progression': aki.progression,
-			'signature': aki.signature,
-			'uri': aki.uri,
-			'timestamp': aki.timestamp,
-			'server': aki.server,
-			'child_mode': aki.child_mode,
-			'frontaddr': aki.frontaddr,
-			'question_filter': aki.question_filter
-		})
-
-		return utils.output('end', q, { 'showNextActionSuggestions': True })
-	except:
-		return utils.output('end', 'network_error')
+        leon.answer({
+            'key': question,
+            'core': {
+                'showNextActionSuggestions': True
+            }
+        })
+    except:
+        leon.answer({
+            'key': 'network_error',
+            'core': {
+                'isInActionLoop': False
+            }
+        })

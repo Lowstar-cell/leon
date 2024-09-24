@@ -18,10 +18,7 @@
     "browser": true
   },
   "parserOptions": {
-    "ecmaVersion": 2021
-  },
-  "globals": {
-    "io": true
+    "ecmaVersion": "latest"
   },
   "plugins": ["@typescript-eslint", "unicorn", "import"],
   "ignorePatterns": "*.spec.js",
@@ -29,7 +26,7 @@
     "@typescript-eslint/no-non-null-assertion": ["off"],
     "no-async-promise-executor": ["off"],
     "no-underscore-dangle": ["error", { "allowAfterThis": true }],
-    "prefer-destructuring": ["error"],
+    "prefer-destructuring": ["off"],
     "comma-dangle": ["error", "never"],
     "semi": ["error", "never"],
     "object-curly-spacing": ["error", "always"],
@@ -67,6 +64,12 @@
     ]
   },
   "overrides": [
+    {
+      "files": ["skills/**/*.ts"],
+      "rules": {
+        "import/order": "off"
+      }
+    },
     {
       "files": ["*.ts"],
       "rules": {

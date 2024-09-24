@@ -1,56 +1,54 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
+from bridges.python.src.sdk.leon import leon
+from bridges.python.src.sdk.types import ActionParams
+from bridges.python.src.sdk.widget import WidgetOptions
+from ..widgets.todos_list_widget import TodosListWidget, TodosListWidgetParams
+from ..lib import memory
 
-from time import time
+from typing import Union
 
-import utils
-from ..lib import db
 
-def uncheck_todos(params):
-	"""Uncheck todos"""
+def run(params: ActionParams) -> None:
+    """Uncheck todos"""
 
-	# List name
-	list_name = ''
+    list_name: Union[str, None] = None
+    todos: list[str] = []
 
-	# Todos
-	todos = []
+    for item in params['entities']:
+        if item['entity'] == 'list':
+            list_name = item['sourceText'].lower()
+        elif item['entity'] == 'todos':
+            todos = [chunk.strip() for chunk in item['sourceText'].lower().split(',')]
 
-	# Find entities
-	for item in params['entities']:
-		if item['entity'] == 'list':
-			list_name = item['sourceText'].lower()
-		elif item['entity'] == 'todos':
-			# Split todos into array and trim start/end-whitespaces
-			todos = [chunk.strip() for chunk in item['sourceText'].lower().split(',')]
+    if list_name is None:
+        return leon.answer({'key': 'list_not_provided'})
 
-	# Verify if a list name has been provided
-	if not list_name:
-		return utils.output('end', 'list_not_provided')
+    if len(todos) == 0:
+        return leon.answer({'key': 'todos_not_provided'})
 
-	# Verify todos have been provided
-	if len(todos) == 0:
-		return utils.output('end', 'todos_not_provided')
+    if not memory.has_todo_list(list_name):
+        return leon.answer({
+            'key': 'list_does_not_exist',
+            'data': {
+                'list': list_name
+            }
+        })
 
-	# Verify if the list exists
-	if db.has_list(list_name) == False:
-		return utils.output('end', { 'key': 'list_does_not_exist',
-			'data': {
-				'list': list_name
-			}
-		})
+    for todo in todos:
+        for todo_item in memory.get_todo_items(None, list_name):
+            if todo_item['name'].find(todo) != -1:
+                memory.toggle_todo_item(list_name, todo_item['name'])
 
-	result = ''
-	for todo in todos:
-		for db_todo in db.get_todos(list_name):
-			# Rough matching (e.g. 1kg of rice = rice)
-			if db_todo['name'].find(todo) != -1:
-				db.uncomplete_todo(list_name, db_todo['name'])
+    # Get the updated list of todos
+    list_todos = memory.get_todo_items(None, list_name)
 
-				result += utils.translate('list_todo_element', { 'todo': db_todo['name'] })
+    todos_list_options: WidgetOptions[TodosListWidgetParams] = WidgetOptions(
+        wrapper_props={'noPadding': True},
+        params={'list_name': list_name, 'todos': list_todos},
+        on_fetch={
+            'widget_id': list_todos[0]['widget_id'],
+            'action_name': 'view_list'
+        }
+    )
+    todos_list_widget = TodosListWidget(todos_list_options)
 
-	return utils.output('end', { 'key': 'todo_unchecked',
-		'data': {
-			'list': list_name,
-			'result': result
-		}
-	})
+    leon.answer({'widget': todos_list_widget})

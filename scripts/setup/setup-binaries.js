@@ -1,27 +1,26 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import stream from 'node:stream'
-import readline from 'node:readline'
 
-import axios from 'axios'
-import prettyBytes from 'pretty-bytes'
-import prettyMilliseconds from 'pretty-ms'
+import { command } from 'execa'
 import extractZip from 'extract-zip'
 
 import {
   BINARIES_FOLDER_NAME,
   GITHUB_URL,
+  NODEJS_BRIDGE_ROOT_PATH,
   NODEJS_BRIDGE_DIST_PATH,
   PYTHON_BRIDGE_DIST_PATH,
-  TCP_SERVER_DIST_PATH,
+  PYTHON_TCP_SERVER_DIST_PATH,
   NODEJS_BRIDGE_BIN_NAME,
   PYTHON_BRIDGE_BIN_NAME,
-  TCP_SERVER_BIN_NAME,
+  PYTHON_TCP_SERVER_BIN_NAME,
   NODEJS_BRIDGE_VERSION,
   PYTHON_BRIDGE_VERSION,
-  TCP_SERVER_VERSION
+  PYTHON_TCP_SERVER_VERSION
 } from '@/constants'
 import { LogHelper } from '@/helpers/log-helper'
+import { FileHelper } from '@/helpers/file-helper'
 
 /**
  * Set up binaries according to the given setup target
@@ -49,23 +48,13 @@ TARGETS.set('python-bridge', {
   isPlatformDependent: true
 })
 TARGETS.set('tcp-server', {
-  name: 'TCP server',
-  distPath: TCP_SERVER_DIST_PATH,
-  manifestPath: path.join(TCP_SERVER_DIST_PATH, 'manifest.json'),
-  archiveName: `${TCP_SERVER_BIN_NAME}-${BINARIES_FOLDER_NAME}.zip`,
-  version: TCP_SERVER_VERSION,
+  name: 'Python TCP server',
+  distPath: PYTHON_TCP_SERVER_DIST_PATH,
+  manifestPath: path.join(PYTHON_TCP_SERVER_DIST_PATH, 'manifest.json'),
+  archiveName: `${PYTHON_TCP_SERVER_BIN_NAME}-${BINARIES_FOLDER_NAME}.zip`,
+  version: PYTHON_TCP_SERVER_VERSION,
   isPlatformDependent: true
 })
-
-async function createManifestFile(manifestPath, name, version) {
-  const manifest = {
-    name,
-    version,
-    setupDate: Date.now()
-  }
-
-  await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
-}
 
 const setupBinaries = async (key) => {
   const {
@@ -96,33 +85,32 @@ const setupBinaries = async (key) => {
       fs.promises.rm(archivePath, { recursive: true, force: true })
     ])
 
+    if (key === 'nodejs-bridge') {
+      try {
+        LogHelper.info('Installing Node.js bridge npm packages...')
+
+        await command(
+          `npm install --package-lock=false --prefix ${NODEJS_BRIDGE_ROOT_PATH}`,
+          {
+            shell: true
+          }
+        )
+
+        LogHelper.success('Node.js bridge npm packages installed')
+      } catch (e) {
+        throw new Error(`Failed to install Node.js bridge npm packages: ${e}`)
+      }
+    }
+
     try {
       LogHelper.info(`Downloading ${name}...`)
 
       const archiveWriter = fs.createWriteStream(archivePath)
       const latestReleaseAssetURL = `${GITHUB_URL}/releases/download/${key}_v${version}/${archiveName}`
-      const { data } = await axios.get(latestReleaseAssetURL, {
-        responseType: 'stream',
-        onDownloadProgress: ({ loaded, total, progress, estimated, rate }) => {
-          const percentage = Math.floor(progress * 100)
-          const downloadedSize = prettyBytes(loaded)
-          const totalSize = prettyBytes(total)
-          const estimatedTime = !estimated
-            ? 0
-            : prettyMilliseconds(estimated * 1_000, { secondsDecimalDigits: 0 })
-          const downloadRate = !rate ? 0 : prettyBytes(rate)
-
-          readline.clearLine(process.stdout, 0)
-          readline.cursorTo(process.stdout, 0, null)
-          process.stdout.write(
-            `Download progress: ${percentage}% (${downloadedSize}/${totalSize} | ${downloadRate}/s | ${estimatedTime} ETA)`
-          )
-
-          if (percentage === 100) {
-            process.stdout.write('\n')
-          }
-        }
-      })
+      const { data } = await FileHelper.downloadFile(
+        latestReleaseAssetURL,
+        'stream'
+      )
 
       data.pipe(archiveWriter)
       await stream.promises.finished(archiveWriter)
@@ -130,22 +118,20 @@ const setupBinaries = async (key) => {
       LogHelper.success(`${name} downloaded`)
       LogHelper.info(`Extracting ${name}...`)
 
-      const absoluteDistPath = isPlatformDependent
-        ? path.resolve(distPath)
-        : path.resolve(distPath, 'bin')
+      const absoluteDistPath = path.resolve(distPath)
       await extractZip(archivePath, { dir: absoluteDistPath })
 
       LogHelper.success(`${name} extracted`)
 
       await Promise.all([
         fs.promises.rm(archivePath, { recursive: true, force: true }),
-        createManifestFile(manifestPath, name, version)
+        FileHelper.createManifestFile(manifestPath, name, version)
       ])
 
       LogHelper.success(`${name} manifest file created`)
       LogHelper.success(`${name} ${version} ready`)
-    } catch (error) {
-      throw new Error(`Failed to set up ${name}: ${error}`)
+    } catch (e) {
+      throw new Error(`Failed to set up ${name}: ${e}`)
     }
   } else {
     LogHelper.success(`${name} is already at the latest version (${version})`)

@@ -9,17 +9,18 @@ import type {
   NERCustomEntity,
   NLUResult
 } from '@/core/nlp/types'
-import type { SkillConfigSchema, SkillSchema } from '@/schemas/skill-schemas'
+import type {
+  SkillAnswerConfigSchema,
+  SkillConfigSchema,
+  SkillSchema
+} from '@/schemas/skill-schemas'
 import type {
   BrainProcessResult,
   IntentObject,
   SkillResult
 } from '@/core/brain/types'
-import {
-  SkillActionTypes,
-  SkillBridges,
-  SkillOutputTypes
-} from '@/core/brain/types'
+import type { AnswerOutput } from '@sdk/types'
+import { SkillActionTypes, SkillBridges } from '@/core/brain/types'
 import { langs } from '@@/core/langs.json'
 import {
   HAS_TTS,
@@ -27,16 +28,33 @@ import {
   NODEJS_BRIDGE_BIN_PATH,
   TMP_PATH
 } from '@/constants'
-import { SOCKET_SERVER, TTS } from '@/core'
+import {
+  CONVERSATION_LOGGER,
+  LLM_MANAGER,
+  NLU,
+  SOCKET_SERVER,
+  TTS
+} from '@/core'
 import { LangHelper } from '@/helpers/lang-helper'
 import { LogHelper } from '@/helpers/log-helper'
 import { SkillDomainHelper } from '@/helpers/skill-domain-helper'
 import { StringHelper } from '@/helpers/string-helper'
-import Synchronizer from '@/core/synchronizer'
+import { DateHelper } from '@/helpers/date-helper'
+import { ParaphraseLLMDuty } from '@/core/llm-manager/llm-duties/paraphrase-llm-duty'
+import { AnswerQueue } from '@/core/brain/answer-queue'
+
+interface IsTalkingWithVoiceOptions {
+  shouldInterrupt?: boolean
+}
+
+const MIN_NB_OF_WORDS_TO_USE_LLM_NLG = 5
 
 export default class Brain {
   private static instance: Brain
   private _lang: ShortLanguageCode = 'en'
+  private _isTalkingWithVoice = false
+  private answerQueue = new AnswerQueue<SkillAnswerConfigSchema>()
+  private answerQueueProcessTimerId: NodeJS.Timeout | undefined = undefined
   private broca: GlobalAnswersSchema = JSON.parse(
     fs.readFileSync(
       path.join(process.cwd(), 'core', 'data', this._lang, 'answers.json'),
@@ -46,8 +64,7 @@ export default class Brain {
   private skillProcess: ChildProcessWithoutNullStreams | undefined = undefined
   private domainFriendlyName = ''
   private skillFriendlyName = ''
-  private skillOutput = ''
-  private speeches: string[] = []
+  public skillOutput = ''
   public isMuted = false // Close Leon mouth if true; e.g. over HTTP
 
   constructor() {
@@ -56,7 +73,58 @@ export default class Brain {
       LogHelper.success('New instance')
 
       Brain.instance = this
+
+      /**
+       * Clean up the answer queue every 2 hours
+       * to avoid memory leaks
+       */
+      setInterval(
+        () => {
+          if (this.answerQueueProcessTimerId) {
+            this.cleanUpAnswerQueueTimer()
+            this.answerQueue.clear()
+          }
+        },
+        60_000 * 60 * 2
+      )
     }
+  }
+
+  public get isTalkingWithVoice(): boolean {
+    return this._isTalkingWithVoice
+  }
+
+  public setIsTalkingWithVoice(
+    isTalkingWithVoice: boolean,
+    options?: IsTalkingWithVoiceOptions
+  ): void {
+    options = options || {
+      shouldInterrupt: false
+    }
+
+    if (HAS_TTS) {
+      LogHelper.title('Brain')
+
+      if (
+        this._isTalkingWithVoice &&
+        !isTalkingWithVoice &&
+        options.shouldInterrupt
+      ) {
+        // Tell client to interrupt the current speech
+        SOCKET_SERVER.socket?.emit('tts-interruption')
+        // Cancel all the future speeches
+        TTS.speeches = []
+        LogHelper.info('Leon got interrupted')
+      }
+
+      if (isTalkingWithVoice) {
+        LogHelper.info('Leon is talking with voice')
+      } else {
+        LogHelper.info('Leon stopped talking with voice')
+      }
+    }
+
+    this._isTalkingWithVoice = isTalkingWithVoice
   }
 
   public get lang(): ShortLanguageCode {
@@ -76,6 +144,160 @@ export default class Brain {
     if (HAS_TTS) {
       this.updateTTSLang(this._lang)
     }
+  }
+
+  /**
+   * Clean up the answer queue timer to avoid multiple timers running
+   */
+  private cleanUpAnswerQueueTimer(intervalId?: NodeJS.Timeout): void {
+    const intervalToCleanUp = intervalId
+      ? intervalId
+      : this.answerQueueProcessTimerId
+
+    clearInterval(intervalToCleanUp)
+
+    if (intervalToCleanUp === this.answerQueueProcessTimerId) {
+      this.answerQueueProcessTimerId = undefined
+    }
+  }
+
+  /**
+   * Process the answer queue in the right order (first in, first out)
+   */
+  private async processAnswerQueue(end = false): Promise<void> {
+    const naturalStartTypingDelay = 500
+    this.answerQueue.isProcessing = true
+
+    // Clean up the timer as we are now already processing the queue for this timer tick
+    if (this.answerQueueProcessTimerId) {
+      this.cleanUpAnswerQueueTimer()
+    }
+    for (let i = 0; i < this.answerQueue.answers.length; i += 1) {
+      /**
+       * Use setTimeout to have a more natural feeling that
+       * Leon is starting to type another message just after sending the previous one
+       */
+      setTimeout(() => {
+        SOCKET_SERVER.socket?.emit('is-typing', true)
+      }, naturalStartTypingDelay)
+      // Next answer to handle
+      const answer = this.answerQueue.pop()
+      let textAnswer: string | undefined = ''
+      let speechAnswer = ''
+
+      if (answer && answer !== '') {
+        textAnswer = typeof answer === 'string' ? answer : answer.text
+        speechAnswer = typeof answer === 'string' ? answer : answer.speech
+
+        const { actionConfig: currentActionConfig } = NLU.nluResult
+        const hasLoopConfig = !!currentActionConfig?.loop
+        const hasSlotsConfig = !!currentActionConfig?.slots
+        const isLLMNLGDisabled = !!currentActionConfig?.disable_llm_nlg
+
+        /**
+         * Only use LLM NLG if:
+         * - It is not specifically disabled in the action config
+         * - It is enabled in general
+         * - The current action does not have a loop neither slots configuration
+         * (Because sometimes the LLM will not be able to generate a meaningful text,
+         * and it will mislead the conversation)
+         */
+        if (
+          !isLLMNLGDisabled &&
+          LLM_MANAGER.isLLMNLGEnabled &&
+          !hasLoopConfig &&
+          !hasSlotsConfig
+        ) {
+          if (
+            speechAnswer === textAnswer ||
+            typeof answer === 'string' ||
+            answer.speech
+          ) {
+            /**
+             * Only use LLM NLG if the answer is not too short
+             * otherwise it will be too hard for the model to generate a meaningful text
+             */
+            const textToParaphrase = textAnswer ?? speechAnswer
+            const nbOfWords = String(textToParaphrase).split(' ').length
+            if (nbOfWords >= MIN_NB_OF_WORDS_TO_USE_LLM_NLG) {
+              const paraphraseDuty = new ParaphraseLLMDuty({
+                input: textToParaphrase
+              })
+              await paraphraseDuty.init()
+              const paraphraseResult = await paraphraseDuty.execute({
+                // Do not generate tokens when only a speech answer is needed
+                shouldEmitOnToken: !!(!textAnswer && speechAnswer)
+              })
+
+              if (!textAnswer) {
+                speechAnswer = paraphraseResult?.output as unknown as string
+              } else {
+                textAnswer = paraphraseResult?.output as unknown as string
+                speechAnswer = textAnswer
+              }
+            }
+          }
+        }
+
+        if (HAS_TTS) {
+          // Stripe HTML to a whitespace. Whitespace to let the TTS respects punctuation
+          const speech = speechAnswer.replace(/<(?:.|\n)*?>/gm, ' ')
+
+          TTS.add(speech, end)
+        }
+
+        /**
+         * Unify stream feeling for all answers.
+         * But need to ensure that tokens aren't already sent via the onToken
+         * callback on the completion. Can check with LLM_PROVIDER to implement
+         * a mechanism to avoid sending the same tokens twice
+         */
+        /*const generationId = StringHelper.random(6, { onlyLetters: true })
+        const tokens = textAnswer.split(' ')
+        tokens.forEach((token) => {
+          SOCKET_SERVER.socket?.emit('llm-token', {
+            token,
+            generationId
+          })
+        })*/
+
+        /**
+         * Only send an answer when the text answer is defined.
+         * It may happen that only a speech is needed
+         */
+        if (textAnswer) {
+          SOCKET_SERVER.socket?.emit('answer', textAnswer)
+
+          await CONVERSATION_LOGGER.push({
+            who: 'owner',
+            message: NLU.nluResult.newUtterance
+          })
+          await CONVERSATION_LOGGER.push({
+            who: 'leon',
+            message: textAnswer
+          })
+        }
+
+        SOCKET_SERVER.socket?.emit('is-typing', false)
+      }
+    }
+
+    /**
+     * In case new answers have been added answers in the queue while
+     * the queue was being processed, process them
+     */
+    if (!this.answerQueue.isEmpty()) {
+      LogHelper.title('Brain')
+      LogHelper.info(
+        `Answers have been processed. But ${this.answerQueue.answers.length} new answers have been added to the queue while the queue was being processed. Processing them now...`
+      )
+      await this.processAnswerQueue(end)
+    }
+
+    this.answerQueue.isProcessing = false
+    setTimeout(() => {
+      SOCKET_SERVER.socket?.emit('is-typing', false)
+    }, naturalStartTypingDelay)
   }
 
   private async updateTTSLang(newLang: ShortLanguageCode): Promise<void> {
@@ -99,22 +321,34 @@ export default class Brain {
   }
 
   /**
-   * Make Leon talk
+   * Make Leon talk by adding the answer to the answer queue
    */
-  public talk(rawSpeech: string, end = false): void {
+  public async talk(
+    answer: SkillAnswerConfigSchema,
+    end = false
+  ): Promise<void> {
     LogHelper.title('Brain')
     LogHelper.info('Talking...')
 
-    if (rawSpeech !== '') {
-      if (HAS_TTS) {
-        // Stripe HTML to a whitespace. Whitespace to let the TTS respects punctuation
-        const speech = rawSpeech.replace(/<(?:.|\n)*?>/gm, ' ')
-
-        TTS.add(speech, end)
-      }
-
-      SOCKET_SERVER.socket?.emit('answer', rawSpeech)
+    if (!answer) {
+      LogHelper.warning('No answer to say')
+      return
     }
+
+    this.answerQueue.push(answer)
+    /**
+     * If the answer queue is not processing and not empty,
+     * then process the queue,
+     * otherwise clean up the new answer queue timer right away to not have multiple timers running
+     */
+    const answerTimerCheckerId = setInterval(() => {
+      if (!this.answerQueue.isProcessing && !this.answerQueue.isEmpty()) {
+        this.processAnswerQueue(end)
+      } else {
+        this.cleanUpAnswerQueueTimer(answerTimerCheckerId)
+      }
+    }, 300)
+    this.answerQueueProcessTimerId = answerTimerCheckerId
   }
 
   /**
@@ -174,18 +408,31 @@ export default class Brain {
     utteranceID: string,
     slots: IntentObject['slots']
   ): IntentObject {
+    const date = DateHelper.getDateTime()
+    const dateObject = new Date(date)
+
     return {
       id: utteranceID,
-      lang: this._lang,
+      lang: this._lang, // TODO: remove once the Python bridge will be updated to use extra_context_data.lang instead
       domain: nluResult.classification.domain,
       skill: nluResult.classification.skill,
       action: nluResult.classification.action,
       utterance: nluResult.utterance,
+      new_utterance: nluResult.newUtterance,
       current_entities: nluResult.currentEntities,
       entities: nluResult.entities,
       current_resolvers: nluResult.currentResolvers,
       resolvers: nluResult.resolvers,
-      slots
+      slots,
+      extra_context_data: {
+        lang: this._lang,
+        sentiment: nluResult.sentiment,
+        date: date.slice(0, 10),
+        time: date.slice(11, 19),
+        timestamp: dateObject.getTime(),
+        date_time: date,
+        week_day: dateObject.toLocaleString('default', { weekday: 'long' })
+      }
     }
   }
 
@@ -196,21 +443,33 @@ export default class Brain {
     data: Buffer
   ): Promise<Error | null> | void {
     try {
-      const obj = JSON.parse(data.toString())
+      const skillAnswer = JSON.parse(data.toString()) as AnswerOutput
 
-      if (typeof obj === 'object') {
-        if (obj.output.type === SkillOutputTypes.Intermediate) {
-          LogHelper.title(`${this.skillFriendlyName} skill`)
-          LogHelper.info(data.toString())
+      if (typeof skillAnswer === 'object') {
+        LogHelper.title(`${this.skillFriendlyName} skill (on data)`)
+        LogHelper.info(data.toString())
 
-          const speech = obj.output.speech.toString()
-          if (!this.isMuted) {
-            this.talk(speech)
+        if (skillAnswer.output.widget && !this.isMuted) {
+          try {
+            SOCKET_SERVER.socket?.emit(
+              'widget',
+              JSON.stringify(skillAnswer.output.widget)
+            )
+          } catch (e) {
+            LogHelper.title('Brain')
+            LogHelper.error(
+              `Failed to send widget. Widget output is not well formatted: ${e}`
+            )
+          } finally {
+            SOCKET_SERVER.socket?.emit('is-typing', false)
           }
-          this.speeches.push(speech)
-        } else {
-          this.skillOutput = data.toString()
         }
+
+        const { answer } = skillAnswer.output
+        if (!this.isMuted) {
+          this.talk(answer, true)
+        }
+        this.skillOutput = data.toString()
 
         return Promise.resolve(null)
       } else {
@@ -234,11 +493,10 @@ export default class Brain {
       '%skill_name%': this.skillFriendlyName,
       '%domain_name%': this.domainFriendlyName
     })}!`
+
     if (!this.isMuted) {
       this.talk(speech)
-      SOCKET_SERVER.socket?.emit('is-typing', false)
     }
-    this.speeches.push(speech)
   }
 
   /**
@@ -313,7 +571,7 @@ export default class Brain {
   }
 
   /**
-   * Execute Python skills
+   * Execute skills
    */
   public execute(nluResult: NLUResult): Promise<Partial<BrainProcessResult>> {
     const executionTimeStart = Date.now()
@@ -388,7 +646,7 @@ export default class Brain {
 
           // Catch the end of the skill execution
           this.skillProcess?.stdout.on('end', () => {
-            LogHelper.title(`${this.skillFriendlyName} skill`)
+            LogHelper.title(`${this.skillFriendlyName} skill (on end)`)
             LogHelper.info(this.skillOutput)
 
             let skillResult: SkillResult | undefined = undefined
@@ -397,38 +655,6 @@ export default class Brain {
             if (this.skillOutput !== '') {
               try {
                 skillResult = JSON.parse(this.skillOutput)
-
-                if (skillResult?.output.speech) {
-                  skillResult.output.speech =
-                    skillResult.output.speech.toString()
-                  if (!this.isMuted) {
-                    this.talk(skillResult.output.speech, true)
-                  }
-                  speeches.push(skillResult.output.speech)
-
-                  // Synchronize the downloaded content if enabled
-                  if (
-                    skillResult.output.type === SkillOutputTypes.End &&
-                    skillResult.output.options['synchronization'] &&
-                    skillResult.output.options['synchronization'].enabled &&
-                    skillResult.output.options['synchronization'].enabled ===
-                      true
-                  ) {
-                    const sync = new Synchronizer(
-                      this,
-                      nluResult.classification,
-                      skillResult.output.options['synchronization']
-                    )
-
-                    // When the synchronization is finished
-                    sync.synchronize((speech: string) => {
-                      if (!this.isMuted) {
-                        this.talk(speech)
-                      }
-                      speeches.push(speech)
-                    })
-                  }
-                }
               } catch (e) {
                 LogHelper.title(`${this.skillFriendlyName} skill`)
                 LogHelper.error(
@@ -440,10 +666,6 @@ export default class Brain {
             }
 
             Brain.deleteIntentObjFile(intentObjectPath)
-
-            if (!this.isMuted) {
-              SOCKET_SERVER.socket?.emit('is-typing', false)
-            }
 
             const executionTimeEnd = Date.now()
             const executionTime = executionTimeEnd - executionTimeStart
@@ -492,11 +714,14 @@ export default class Brain {
           const { actions, entities: skillConfigEntities } =
             await SkillDomainHelper.getSkillConfig(configFilePath, this._lang)
           const utteranceHasEntities = nluResult.entities.length > 0
+          const utteranceHasSlots = Object.keys(nluResult.slots).length > 0
           const { answers: rawAnswers } = nluResult
+          // TODO: handle dialog action skill speech vs text
+          // let answers = rawAnswers as [{ answer: SkillAnswerConfigSchema }]
           let answers = rawAnswers
           let answer: string | undefined = ''
 
-          if (!utteranceHasEntities) {
+          if (!utteranceHasSlots && !utteranceHasEntities) {
             answers = answers.filter(
               ({ answer }) => answer.indexOf('{{') === -1
             )
@@ -518,6 +743,8 @@ export default class Brain {
                 actions[nluResult.classification.action]?.unknown_answers
 
               if (unknownAnswers) {
+                // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+                // @ts-expect-error
                 answer =
                   unknownAnswers[
                     Math.floor(Math.random() * unknownAnswers.length)
@@ -528,11 +755,26 @@ export default class Brain {
             answer = answers[Math.floor(Math.random() * answers.length)]?.answer
 
             /**
-             * In case the utterance contains entities, and the picked up answer too,
+             * In case the utterance contains slots or entities, and the picked up answer too,
              * then map them (utterance <-> answer)
              */
-            if (utteranceHasEntities && answer?.indexOf('{{') !== -1) {
-              nluResult.currentEntities.forEach((entityObj) => {
+            if (
+              (utteranceHasSlots || utteranceHasEntities) &&
+              answer?.indexOf('{{') !== -1
+            ) {
+              /**
+               * Normalize data to browse (entities and slots)
+               */
+              const dataToBrowse = [
+                ...nluResult.currentEntities,
+                ...nluResult.entities,
+                ...Object.values(nluResult.slots).map((slot) => ({
+                  ...slot.value,
+                  entity: slot.name
+                }))
+              ]
+
+              dataToBrowse.forEach((entityObj) => {
                 answer = StringHelper.findAndMap(answer as string, {
                   [`{{ ${entityObj.entity} }}`]: (entityObj as NERCustomEntity)
                     .resolution.value
@@ -583,7 +825,6 @@ export default class Brain {
 
           if (!this.isMuted) {
             this.talk(answer as string, true)
-            SOCKET_SERVER.socket?.emit('is-typing', false)
           }
 
           // Send suggestions to the client

@@ -21,11 +21,22 @@ const skillActionTypes = [
 const skillDataTypes = [
   Type.Literal('skill_resolver'),
   Type.Literal('global_resolver'),
-  Type.Literal('entity')
+  Type.Literal('entity'),
+  Type.Literal('utterance')
 ]
+const answerTypes = Type.Union([
+  Type.String(),
+  Type.Object({
+    speech: Type.String(),
+    text: Type.Optional(Type.String())
+  })
+])
 const skillCustomEnumEntityType = Type.Object(
   {
-    type: Type.Literal('enum'),
+    type: Type.Literal('enum', {
+      description:
+        'Enum: define a bag of words and synonyms that should match your new entity.'
+    }),
     name: Type.String(),
     options: Type.Record(
       Type.String({ minLength: 1 }),
@@ -35,25 +46,27 @@ const skillCustomEnumEntityType = Type.Object(
     )
   },
   {
-    additionalProperties: false,
-    description:
-      'Enum: define a bag of words and synonyms that should match your new entity.'
+    additionalProperties: false
   }
 )
 const skillCustomRegexEntityType = Type.Object(
   {
-    type: Type.Literal('regex'),
+    type: Type.Literal('regex', {
+      description: 'Regex: you can create an entity based on a regex.'
+    }),
     name: Type.String({ minLength: 1 }),
     regex: Type.String({ minLength: 1 })
   },
   {
-    additionalProperties: false,
-    description: 'Regex: you can create an entity based on a regex.'
+    additionalProperties: false
   }
 )
 const skillCustomTrimEntityType = Type.Object(
   {
-    type: Type.Literal('trim'),
+    type: Type.Literal('trim', {
+      description:
+        'Trim: you can pick up a data from an utterance by clearly defining conditions (e.g: pick up what is after the last "with" word of the utterance).'
+    }),
     name: Type.String({ minLength: 1 }),
     conditions: Type.Array(
       Type.Object(
@@ -81,11 +94,27 @@ const skillCustomTrimEntityType = Type.Object(
           )
         },
         {
-          additionalProperties: false,
-          description:
-            'Trim: you can pick up a data from an utterance by clearly defining conditions (e.g: pick up what is after the last "with" word of the utterance).'
+          additionalProperties: false
         }
       )
+    )
+  },
+  { additionalProperties: false }
+)
+const skillCustomLLMEntityType = Type.Object(
+  {
+    type: Type.Literal('llm', {
+      description:
+        'LLM: you can define an entity based on a JSON schema and the LLM (Large Language Model) will be able to grab it by itself based on the schema.'
+    }),
+    schema: Type.Object(
+      {
+        /**
+         * Any key is allowed
+         * @see https://github.com/withcatai/node-llama-cpp/blob/6b012a6/src/utils/gbnfJson/types.ts#L2
+         */
+      },
+      { additionalProperties: true }
     )
   },
   { additionalProperties: false }
@@ -93,7 +122,8 @@ const skillCustomTrimEntityType = Type.Object(
 const skillCustomEntityTypes = [
   Type.Array(skillCustomTrimEntityType),
   Type.Array(skillCustomRegexEntityType),
-  Type.Array(skillCustomEnumEntityType)
+  Type.Array(skillCustomEnumEntityType),
+  Type.Array(skillCustomLLMEntityType)
 ]
 
 export const domainSchemaObject = Type.Strict(
@@ -149,6 +179,18 @@ export const skillConfigSchemaObject = Type.Strict(
       Type.Object(
         {
           type: Type.Union(skillActionTypes),
+          /*description: Type.String({
+            minLength: 5,
+            maxLength: 64,
+            description:
+              'This helps to understand what your action does. Also used by the LLM (Large Language Model) to match the action.'
+          }),*/
+          disable_llm_nlg: Type.Optional(
+            Type.Boolean({
+              description:
+                'Disable the LLM (Large Language Model) for NLG (Natural Language Generation) in the action.'
+            })
+          ),
           loop: Type.Optional(
             Type.Object(
               {
@@ -157,7 +199,10 @@ export const skillConfigSchemaObject = Type.Strict(
                     type: Type.Union(skillDataTypes),
                     name: Type.String()
                   },
-                  { description: 'An item can be a entity or a resolver.' }
+                  {
+                    description:
+                      'An item can be a entity, a resolver or an utterance.'
+                  }
                 )
               },
               {
@@ -183,9 +228,14 @@ export const skillConfigSchemaObject = Type.Strict(
               { additionalProperties: false }
             )
           ),
-          utterance_samples: Type.Optional(Type.Array(Type.String())),
-          answers: Type.Optional(Type.Array(Type.String())),
-          unknown_answers: Type.Optional(Type.Array(Type.String())),
+          utterance_samples: Type.Optional(
+            Type.Array(Type.String(), {
+              description:
+                'Utterance samples are used by the NLU (Natural Language Understanding) to train the skill. They are examples of what Leon owners can say to trigger the skill action.'
+            })
+          ),
+          answers: Type.Optional(Type.Array(answerTypes)),
+          unknown_answers: Type.Optional(Type.Array(answerTypes)),
           suggestions: Type.Optional(
             Type.Array(Type.String(), {
               description:
@@ -235,8 +285,12 @@ export const skillConfigSchemaObject = Type.Strict(
         { additionalProperties: false }
       )
     ),
-    answers: Type.Optional(
-      Type.Record(Type.String(), Type.Array(Type.String()))
+    answers: Type.Optional(Type.Record(Type.String(), Type.Array(answerTypes))),
+    widget_contents: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Union([Type.String(), Type.Array(Type.String())])
+      )
     ),
     entities: Type.Optional(Type.Record(Type.String(), Type.String())),
     resolvers: Type.Optional(
@@ -270,3 +324,7 @@ export type SkillCustomRegexEntityTypeSchema = Static<
 export type SkillCustomEnumEntityTypeSchema = Static<
   typeof skillCustomEnumEntityType
 >
+export type SkillCustomLLMEntityTypeSchema = Static<
+  typeof skillCustomLLMEntityType
+>
+export type SkillAnswerConfigSchema = Static<typeof answerTypes>

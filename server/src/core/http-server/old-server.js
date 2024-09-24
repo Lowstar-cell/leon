@@ -22,7 +22,7 @@ import {
   STT_PROVIDER,
   TTS_PROVIDER
 } from '@/constants'
-import { TCP_CLIENT } from '@/core'
+import { PYTHON_TCP_CLIENT } from '@/core'
 import Nlu from '@/core/nlu'
 import Brain from '@/core/brain'
 import Asr from '@/core/asr/asr'
@@ -32,7 +32,6 @@ import corsMidd from '@/core/http-server/plugins/cors'
 import otherMidd from '@/core/http-server/plugins/other'
 import keyMidd from '@/core/http-server/plugins/key'
 import infoPlugin from '@/core/http-server/api/info'
-import downloadsPlugin from '@/core/http-server/api/downloads'
 import { LogHelper } from '@/helpers/log-helper'
 import { DateHelper } from '@/helpers/date-helper'
 
@@ -222,10 +221,10 @@ server.handleOnConnection = (socket) => {
     const provider = await addProvider(socket.id)
 
     // Check whether the TCP client is connected to the TCP server
-    if (TCP_CLIENT.isConnected) {
+    if (PYTHON_TCP_CLIENT.isConnected) {
       socket.emit('ready')
     } else {
-      TCP_CLIENT.ee.on('connected', () => {
+      PYTHON_TCP_CLIENT.ee.on('connected', () => {
         socket.emit('ready')
       })
     }
@@ -337,7 +336,6 @@ server.bootstrap = async () => {
   })
 
   server.fastify.register(infoPlugin, { apiVersion })
-  server.fastify.register(downloadsPlugin, { apiVersion })
 
   if (HAS_OVER_HTTP) {
     server.fastify.register((instance, opts, next) => {

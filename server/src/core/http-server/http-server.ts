@@ -1,39 +1,31 @@
 import { join } from 'node:path'
 
-import Fastify, { FastifySchema } from 'fastify'
+import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
-import { Type } from '@sinclair/typebox'
-import type { Static } from '@sinclair/typebox'
 
 import {
+  API_VERSION,
   LEON_VERSION,
   LEON_NODE_ENV,
   HAS_OVER_HTTP,
-  IS_TELEMETRY_ENABLED
+  IS_TELEMETRY_ENABLED,
+  LLM_PROVIDER
 } from '@/constants'
 import { LogHelper } from '@/helpers/log-helper'
 import { DateHelper } from '@/helpers/date-helper'
 import { corsMidd } from '@/core/http-server/plugins/cors'
 import { otherMidd } from '@/core/http-server/plugins/other'
 import { infoPlugin } from '@/core/http-server/api/info'
-import { downloadsPlugin } from '@/core/http-server/api/downloads'
+import { llmInferencePlugin } from '@/core/http-server/api/llm-inference'
+import { runActionPlugin } from '@/core/http-server/api/run-action'
+import { fetchWidgetPlugin } from '@/core/http-server/api/fetch-widget'
 import { keyMidd } from '@/core/http-server/plugins/key'
-import { NLU, BRAIN } from '@/core'
-
-const API_VERSION = 'v1'
+import { utterancePlugin } from '@/core/http-server/api/utterance'
+import { LLM_MANAGER, PERSONA } from '@/core'
+import { SystemHelper } from '@/helpers/system-helper'
 
 export interface APIOptions {
   apiVersion: string
-}
-
-const postQuerySchema = {
-  body: Type.Object({
-    utterance: Type.String()
-  })
-} satisfies FastifySchema
-
-interface PostQuerySchema {
-  body: Static<typeof postQuerySchema.body>
 }
 
 export default class HTTPServer {
@@ -43,7 +35,10 @@ export default class HTTPServer {
 
   public httpServer = this.fastify.server
 
-  constructor(public readonly host: string, public readonly port: number) {
+  constructor(
+    public readonly host: string,
+    public readonly port: number
+  ) {
     if (!HTTPServer.instance) {
       LogHelper.title('HTTP Server')
       LogHelper.success('New instance')
@@ -63,13 +58,29 @@ export default class HTTPServer {
     this.fastify.addHook('preValidation', otherMidd)
 
     LogHelper.title('Initialization')
-    LogHelper.info(`The current env is ${LEON_NODE_ENV}`)
-    LogHelper.info(`The current version is ${LEON_VERSION}`)
+    LogHelper.info(`Environment: ${LEON_NODE_ENV}`)
+    LogHelper.info(`Version: ${LEON_VERSION}`)
+    LogHelper.info(`Time zone: ${DateHelper.getTimeZone()}`)
+    LogHelper.info(`LLM provider: ${LLM_PROVIDER}`)
+    LogHelper.info(`Mood: ${PERSONA.mood.type}`)
+    LogHelper.info(`GPU: ${(await SystemHelper.getGPUDeviceNames())[0]}`)
+    LogHelper.info(
+      `Graphics compute API: ${await SystemHelper.getGraphicsComputeAPI()}`
+    )
+    LogHelper.info(`Total VRAM: ${await SystemHelper.getTotalVRAM()} GB`)
 
-    LogHelper.info(`The current time zone is ${DateHelper.getTimeZone()}`)
+    const isLLMEnabled = LLM_MANAGER.isLLMEnabled ? 'enabled' : 'disabled'
+    LogHelper.info(`LLM: ${isLLMEnabled}`)
+
+    const isLLMNLGEnabled = LLM_MANAGER.isLLMNLGEnabled ? 'enabled' : 'disabled'
+    LogHelper.info(`LLM NLG: ${isLLMNLGEnabled}`)
+
+    const isLLMActionRecognitionEnabled =
+      LLM_MANAGER.isLLMActionRecognitionEnabled ? 'enabled' : 'disabled'
+    LogHelper.info(`LLM action recognition: ${isLLMActionRecognitionEnabled}`)
 
     const isTelemetryEnabled = IS_TELEMETRY_ENABLED ? 'enabled' : 'disabled'
-    LogHelper.info(`Telemetry ${isTelemetryEnabled}`)
+    LogHelper.info(`Telemetry: ${isTelemetryEnabled}`)
 
     await this.bootstrap()
   }
@@ -87,40 +98,16 @@ export default class HTTPServer {
       reply.sendFile('index.html')
     })
 
+    this.fastify.register(runActionPlugin, { apiVersion: API_VERSION })
+    this.fastify.register(fetchWidgetPlugin, { apiVersion: API_VERSION })
     this.fastify.register(infoPlugin, { apiVersion: API_VERSION })
-    this.fastify.register(downloadsPlugin, { apiVersion: API_VERSION })
+    this.fastify.register(llmInferencePlugin, { apiVersion: API_VERSION })
 
     if (HAS_OVER_HTTP) {
       this.fastify.register((instance, _opts, next) => {
         instance.addHook('preHandler', keyMidd)
 
-        instance.route<{
-          Body: PostQuerySchema['body']
-        }>({
-          method: 'POST',
-          url: '/api/query',
-          schema: postQuerySchema,
-          handler: async (request, reply) => {
-            const { utterance } = request.body
-
-            try {
-              BRAIN.isMuted = true
-              const data = await NLU.process(utterance)
-
-              reply.send({
-                ...data,
-                success: true
-              })
-            } catch (error) {
-              const message = error instanceof Error ? error.message : error
-              reply.statusCode = 500
-              reply.send({
-                message,
-                success: false
-              })
-            }
-          }
-        })
+        instance.register(utterancePlugin, { apiVersion: API_VERSION })
 
         // TODO: reimplement skills routes once the new core is ready
         // server.generateSkillsRoutes(instance)

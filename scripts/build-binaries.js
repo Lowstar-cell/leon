@@ -7,14 +7,14 @@ import prettyBytes from 'pretty-bytes'
 
 import {
   PYTHON_BRIDGE_SRC_PATH,
-  TCP_SERVER_SRC_PATH,
+  PYTHON_TCP_SERVER_SRC_PATH,
   BINARIES_FOLDER_NAME,
   NODEJS_BRIDGE_DIST_PATH,
   PYTHON_BRIDGE_DIST_PATH,
-  TCP_SERVER_DIST_PATH,
+  PYTHON_TCP_SERVER_DIST_PATH,
   NODEJS_BRIDGE_BIN_NAME,
   PYTHON_BRIDGE_BIN_NAME,
-  TCP_SERVER_BIN_NAME,
+  PYTHON_TCP_SERVER_BIN_NAME,
   NODEJS_BRIDGE_ROOT_PATH
 } from '@/constants'
 import { OSTypes } from '@/types'
@@ -48,13 +48,13 @@ BUILD_TARGETS.set('python-bridge', {
   dotVenvPath: path.join(PYTHON_BRIDGE_SRC_PATH, '.venv')
 })
 BUILD_TARGETS.set('tcp-server', {
-  name: 'TCP server',
+  name: 'Python TCP server',
   needsPythonEnv: true,
-  pipfilePath: path.join(TCP_SERVER_SRC_PATH, 'Pipfile'),
-  setupFilePath: path.join(TCP_SERVER_SRC_PATH, 'setup.py'),
-  distPath: TCP_SERVER_DIST_PATH,
-  archiveName: `${TCP_SERVER_BIN_NAME}-${BINARIES_FOLDER_NAME}.zip`,
-  dotVenvPath: path.join(TCP_SERVER_SRC_PATH, '.venv')
+  pipfilePath: path.join(PYTHON_TCP_SERVER_SRC_PATH, 'Pipfile'),
+  setupFilePath: path.join(PYTHON_TCP_SERVER_SRC_PATH, 'setup.py'),
+  distPath: PYTHON_TCP_SERVER_DIST_PATH,
+  archiveName: `${PYTHON_TCP_SERVER_BIN_NAME}-${BINARIES_FOLDER_NAME}.zip`,
+  dotVenvPath: path.join(PYTHON_TCP_SERVER_SRC_PATH, '.venv')
 })
 ;(async () => {
   LoaderHelper.start()
@@ -82,7 +82,7 @@ BUILD_TARGETS.set('tcp-server', {
   } = BUILD_TARGETS.get(givenBuildTarget)
   const buildPath = needsPythonEnv
     ? path.join(distPath, BINARIES_FOLDER_NAME)
-    : distPath
+    : path.join(distPath, 'bin')
 
   const { type: osType } = SystemHelper.getInformation()
 
@@ -117,8 +117,12 @@ BUILD_TARGETS.set('tcp-server', {
       process.env.PIPENV_PIPFILE = pipfilePath
       process.env.PIPENV_VENV_IN_PROJECT = true
 
+      /**
+       * cx_Freeze usage
+       * @see https://cx-freeze.readthedocs.io/en/latest/setup_script.html#build-exe
+       */
       await command(
-        `pipenv run python ${setupFilePath} build --build-exe ${buildPath}`,
+        `pipenv run python ${setupFilePath} build_exe --build-exe ${buildPath}`,
         {
           shell: true,
           stdio: 'inherit'
@@ -137,14 +141,22 @@ BUILD_TARGETS.set('tcp-server', {
      * Build for binaries not requiring a Python environment
      */
     try {
-      const tsconfigPath = path.join(NODEJS_BRIDGE_ROOT_PATH, 'tsconfig.json')
-      const distMainFilePath = path.join(NODEJS_BRIDGE_DIST_PATH, 'main.js')
+      const distBinPath = path.join(NODEJS_BRIDGE_DIST_PATH, 'bin')
+      const distMainFilePath = path.join(distBinPath, 'index.js')
       const distRenamedMainFilePath = path.join(
-        NODEJS_BRIDGE_DIST_PATH,
+        distBinPath,
         NODEJS_BRIDGE_BIN_NAME
       )
 
-      await command(`tsc --project ${tsconfigPath}`, {
+      await fs.promises.rm(buildPath, { recursive: true, force: true })
+
+      const inputMainFilePath = path.join(
+        NODEJS_BRIDGE_ROOT_PATH,
+        'src',
+        'main.ts'
+      )
+
+      await command(`ncc build ${inputMainFilePath} --out ${distBinPath}`, {
         shell: true,
         stdio: 'inherit'
       })
@@ -188,7 +200,7 @@ BUILD_TARGETS.set('tcp-server', {
   if (needsPythonEnv) {
     archive.directory(buildPath, BINARIES_FOLDER_NAME)
   } else {
-    archive.glob(`**/!(${archiveName})`, { cwd: distPath })
+    archive.directory(buildPath, 'bin')
   }
 
   await archive.finalize()
